@@ -1,19 +1,40 @@
 from flask import Flask, request, jsonify
 from models import *
+from functools import wraps
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ecommerce.db'  # Use SQLite for simplicity
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
+from functools import wraps
+from flask import request, jsonify
+
+def roles_required(*allowed_roles):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # Assume the username is obtained from a secure token or session
+            username = request.headers.get('username')
+            if not username:
+                return jsonify({"error": "Authentication required"}), 401
+            
+            user = User.query.filter_by(username=username).first()
+            if not user or user.role not in allowed_roles:
+                return jsonify({"error": "Access denied. Insufficient privileges."}), 403
+            
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
 
 @app.route('/customers/register', methods=['POST'])
 def register_customer():
     data = request.json
     # Check if username already exists
-    if Customer.query.filter_by(username=data['username']).first():
+    if User.query.filter_by(username=data['username']).first():
         return jsonify({"error": "Username already exists"}), 400
-    # Create a new customer
-    new_customer = Customer(
+    # Create a new user (role: Customer)
+    new_user = User(
         username=data['username'],
         password=data['password'],
         full_name=data['full_name'],
@@ -21,41 +42,39 @@ def register_customer():
         address=data['address'],
         gender=data['gender'],
         marital_status=data['marital_status'],
+        role="Customer"  # Explicitly set the role to 'Customer'
     )
-    db.session.add(new_customer)
+    db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "Customer registered successfully"}), 201
 
-
-# Delete Customer
 @app.route('/customers/<int:id>', methods=['DELETE'])
+@roles_required("Admin")
 def delete_customer(id):
-    customer = Customer.query.get(id)
-    if not customer:
+    customer = User.query.get(id)
+    if not customer or customer.role != "Customer":
         return jsonify({"error": "Customer not found"}), 404
     db.session.delete(customer)
     db.session.commit()
     return jsonify({"message": "Customer deleted successfully"})
 
-
-# Update Customer Information
 @app.route('/customers/<int:id>', methods=['PUT'])
+@roles_required("Admin")
 def update_customer(id):
-    customer = Customer.query.get(id)
-    if not customer:
+    customer = User.query.get(id)
+    if not customer or customer.role != "Customer":
         return jsonify({"error": "Customer not found"}), 404
     data = request.json
     for key, value in data.items():
-        if hasattr(customer, key):  # Check if the attribute exists on the model
+        if hasattr(customer, key):
             setattr(customer, key, value)
     db.session.commit()
     return jsonify({"message": "Customer updated successfully"})
 
-
-# Get All Customers
 @app.route('/customers', methods=['GET'])
+@roles_required("Admin")
 def get_all_customers():
-    customers = Customer.query.all()
+    customers = User.query.filter_by(role="Customer").all()
     return jsonify([
         {
             "id": customer.id,
@@ -66,11 +85,10 @@ def get_all_customers():
         for customer in customers
     ])
 
-
-# Get Customer by Username
 @app.route('/customers/<username>', methods=['GET'])
+@roles_required("Admin")
 def get_customer(username):
-    customer = Customer.query.filter_by(username=username).first()
+    customer = User.query.filter_by(username=username, role="Customer").first()
     if not customer:
         return jsonify({"error": "Customer not found"}), 404
     return jsonify({
@@ -85,10 +103,11 @@ def get_customer(username):
     })
 
 
-# Charge Customer Wallet
+
 @app.route('/customers/<int:id>/charge', methods=['POST'])
+@roles_required("Customer")
 def charge_wallet(id):
-    customer = Customer.query.get(id)
+    customer = User.query.get(id)
     if not customer:
         return jsonify({"error": "Customer not found"}), 404
     amount = request.json.get('amount')
@@ -98,11 +117,10 @@ def charge_wallet(id):
     db.session.commit()
     return jsonify({"message": f"Wallet charged by {amount}. New balance: {customer.wallet}"})
 
-
-# Deduct Money from Wallet
 @app.route('/customers/<int:id>/deduct', methods=['POST'])
+@roles_required("Customer")
 def deduct_wallet(id):
-    customer = Customer.query.get(id)
+    customer = User.query.get(id)
     if not customer:
         return jsonify({"error": "Customer not found"}), 404
     amount = request.json.get('amount')
@@ -115,6 +133,7 @@ def deduct_wallet(id):
     return jsonify({"message": f"Wallet deducted by {amount}. New balance: {customer.wallet}"})
 
 @app.route('/inventory/add', methods=['POST'])
+@roles_required("Admin")
 def add_product():
     data = request.json
     # Validate input data
@@ -137,6 +156,7 @@ def add_product():
 
 # 2. Deduct Goods from Inventory
 @app.route('/inventory/deduct/<int:product_id>', methods=['POST'])
+@roles_required("Admin")
 def deduct_product_stock(product_id):
     product = Product.query.get(product_id)
     if not product:
@@ -156,6 +176,7 @@ def deduct_product_stock(product_id):
 
 # 3. Update Product Information
 @app.route('/inventory/update/<int:product_id>', methods=['PUT'])
+@roles_required("Admin")
 def update_product(product_id):
     product = Product.query.get(product_id)
     if not product:
@@ -180,6 +201,7 @@ def display_available_goods():
 
 # 2. Get Goods Details
 @app.route('/sales/good-details/<int:product_id>', methods=['GET'])
+@roles_required("Admin","Customer")
 def get_good_details(product_id):
     product = Product.query.get(product_id)
     if not product:
@@ -194,19 +216,19 @@ def get_good_details(product_id):
     })
 
 
-# 3. Sale: Process a Sale
 @app.route('/sales/purchase', methods=['POST'])
+@roles_required("Customer")
 def process_sale():
     data = request.json
     username = data.get('username')
     product_name = data.get('product_name')
 
     # Validate user and product
-    customer = Customer.query.filter_by(username=username).first()
+    customer = User.query.filter_by(username=username, role="Customer").first()  # Ensure the user is a Customer
     product = Product.query.filter_by(name=product_name).first()
 
     if not customer:
-        return jsonify({"error": "Customer not found"}), 404
+        return jsonify({"error": "Customer not found or not authorized"}), 404
     if not product:
         return jsonify({"error": "Product not found"}), 404
     if product.stock <= 0:
@@ -229,12 +251,13 @@ def process_sale():
         "remaining_wallet_balance": customer.wallet,
         "remaining_stock": product.stock
     })
-# 4. Get Purchase History (Optional API)
+
 @app.route('/sales/purchase-history/<int:customer_id>', methods=['GET'])
+@roles_required("Customer")
 def get_purchase_history(customer_id):
-    customer = Customer.query.get(customer_id)
-    if not customer:
-        return jsonify({"error": "Customer not found"}), 404
+    customer = User.query.get(customer_id)  # Use the User model
+    if not customer or customer.role != "Customer":  # Ensure the user is a Customer
+        return jsonify({"error": "Customer not found or not authorized"}), 404
 
     purchases = PurchaseHistory.query.filter_by(customer_id=customer_id).all()
     history = [
@@ -248,13 +271,16 @@ def get_purchase_history(customer_id):
 
 # 1. Submit Review
 @app.route('/reviews/submit', methods=['POST'])
+@roles_required("Customer")
 def submit_review():
     data = request.json
     # Validate customer and product
-    customer = Customer.query.get(data['customer_id'])
+    customer = User.query.get(data['customer_id'])  # Use the User model
     product = Product.query.get(data['product_id'])
-    if not customer or not product:
+    if not customer or customer.role != "Customer":  # Ensure the user is a Customer
         return jsonify({"error": "Invalid customer or product ID"}), 404
+    if not product:
+        return jsonify({"error": "Invalid product ID"}), 404
 
     # Create a new review
     new_review = Review(
@@ -270,6 +296,7 @@ def submit_review():
 
 # 2. Update Review
 @app.route('/reviews/update/<int:review_id>', methods=['PUT'])
+@roles_required("Customer")
 def update_review(review_id):
     review = Review.query.get(review_id)
     if not review:
@@ -284,6 +311,7 @@ def update_review(review_id):
 
 # 3. Delete Review
 @app.route('/reviews/delete/<int:review_id>', methods=['DELETE'])
+@roles_required("Customer")
 def delete_review(review_id):
     review = Review.query.get(review_id)
     if not review:
@@ -296,6 +324,7 @@ def delete_review(review_id):
 
 # 4. Get Product Reviews
 @app.route('/reviews/product/<int:product_id>', methods=['GET'])
+@roles_required("Customer","Admin")
 def get_product_reviews(product_id):
     product = Product.query.get(product_id)
     if not product:
@@ -315,10 +344,11 @@ def get_product_reviews(product_id):
 
 # 5. Get Customer Reviews
 @app.route('/reviews/customer/<int:customer_id>', methods=['GET'])
+@roles_required("Customer")
 def get_customer_reviews(customer_id):
-    customer = Customer.query.get(customer_id)
-    if not customer:
-        return jsonify({"error": "Customer not found"}), 404
+    customer = User.query.get(customer_id)  # Use the User model
+    if not customer or customer.role != "Customer":  # Ensure the user is a Customer
+        return jsonify({"error": "Customer not found or not authorized"}), 404
 
     reviews = Review.query.filter_by(customer_id=customer_id).all()
     return jsonify([
@@ -334,6 +364,7 @@ def get_customer_reviews(customer_id):
 
 # 6. Moderate Review
 @app.route('/reviews/moderate/<int:review_id>', methods=['PUT'])
+@roles_required("Admin")
 def moderate_review(review_id):
     review = Review.query.get(review_id)
     if not review:
@@ -354,13 +385,14 @@ def moderate_review(review_id):
 
 # 7. Get Review Details
 @app.route('/reviews/details/<int:review_id>', methods=['GET'])
+@roles_required("Customer","Admin")
 def get_review_details(review_id):
     review = Review.query.get(review_id)
     if not review:
         return jsonify({"error": "Review not found"}), 404
 
     product = Product.query.get(review.product_id)
-    customer = Customer.query.get(review.customer_id)
+    customer = User.query.get(review.customer_id)  # Use the User model
     return jsonify({
         "review_id": review.id,
         "product_name": product.name if product else "Unknown",
@@ -368,11 +400,37 @@ def get_review_details(review_id):
         "rating": review.rating,
         "comment": review.comment
     })
+
 # -------------------------------
 # Main Entry Point
 # -------------------------------
+# FUNCTION FOR TESTING 
+def add_admin_user():
+    with app.app_context():
+        # Create an admin user
+        admin_user = User(
+            username='adminuser',
+            password='secureAdminPassword',  # You should hash this password in a real application
+            full_name='Admin User',
+            age=35,
+            address='456 Admin St',
+            gender='Male',
+            marital_status='Married',
+            wallet=500.0,  # Initial amount in the wallet for demonstration
+            role='Admin'
+        )
+        
+        # Check if the user already exists to avoid duplicates
+        existing_user = User.query.filter_by(username='adminuser').first()
+        if existing_user is None:
+            db.session.add(admin_user)
+            db.session.commit()
+            print("Admin user added successfully!")
+        else:
+            print("Admin user already exists.")
 if __name__ == "__main__":
     with app.app_context():
         db.drop_all()
-        db.create_all()  # Ensure database tables are created
+        db.create_all()
+        add_admin_user()  # Ensure database tables are created
     app.run(debug=True)
