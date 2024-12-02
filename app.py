@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from models import *
+from .models import *
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ecommerce.db'  # Use SQLite for simplicity
@@ -9,9 +9,17 @@ db.init_app(app)
 @app.route('/customers/register', methods=['POST'])
 def register_customer():
     data = request.json
+
+    # Validate required fields
+    required_fields = ["username", "password", "full_name", "age", "address", "gender", "marital_status"]
+    for field in required_fields:
+        if field not in data or not data[field]:
+            return jsonify({"error": f"{field} is required"}), 400
+
     # Check if username already exists
     if Customer.query.filter_by(username=data['username']).first():
         return jsonify({"error": "Username already exists"}), 400
+
     # Create a new customer
     new_customer = Customer(
         username=data['username'],
@@ -168,6 +176,7 @@ def update_product(product_id):
             setattr(product, key, value)
     db.session.commit()
     return jsonify({"message": "Product updated successfully"})
+
 # 1. Display Available Goods
 @app.route('/sales/available-goods', methods=['GET'])
 def display_available_goods():
