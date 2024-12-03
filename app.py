@@ -8,7 +8,6 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'your_secret_string_here'
 db.init_app(app)
 from functools import wraps
-from flask import request, jsonify
 def login_required(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -16,11 +15,24 @@ def login_required(func):
             return jsonify({"error": "Authentication required"}), 401
         return func(*args, **kwargs)
     return wrapper
+import html
+
+def sanitize_string(input_string):
+    if input_string is not None:
+        return html.escape(input_string)
+    return None
 
 @app.route('/login', methods=['POST'])
 def login():
-    username = request.json.get('username')
-    password = request.json.get('password')  # In production, use hashed passwords
+    # Type checking and sanitization of inputs
+    username = sanitize_string(request.json.get('username'))
+    password = sanitize_string(request.json.get('password'))  # In production, use hashed passwords
+
+    if not isinstance(username, str) or not isinstance(password, str):
+        return jsonify({"error": "Invalid input types for username or password"}), 400
+
+    # Format validation can also be added here if specific rules are required
+
     user = User.query.filter_by(username=username).first()
     if user and user.password == password:
         session['user_id'] = user.id
@@ -28,7 +40,6 @@ def login():
         session['role'] = user.role
         return jsonify({"message": "Logged in successfully"})
     return jsonify({"error": "Invalid username or password"}), 401
-
 @app.route('/logout', methods=['GET'])
 def logout():
     session.pop('user_id', None)
@@ -57,23 +68,45 @@ def roles_required(*allowed_roles):
 @app.route('/customers/register', methods=['POST'])
 def register_customer():
     data = request.json
+    # Sanitize and validate inputs
+    username = sanitize_string(data.get('username'))
+    password = sanitize_string(data.get('password'))  # Assume passwords are hashed before storage
+    full_name = sanitize_string(data.get('full_name'))
+    address = sanitize_string(data.get('address'))
+    gender = sanitize_string(data.get('gender'))
+    marital_status = sanitize_string(data.get('marital_status'))
+    
+    # Type and range checking
+    if not isinstance(username, str) or not username:
+        return jsonify({"error": "Invalid or missing username"}), 400
+    if not isinstance(password, str) or not password:
+        return jsonify({"error": "Invalid or missing password"}), 400
+    try:
+        age = int(data.get('age'))
+        if age < 0 or age > 120:  # Example age range check
+            return jsonify({"error": "Invalid age"}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid age"}), 400
+    
     # Check if username already exists
-    if User.query.filter_by(username=data['username']).first():
+    if User.query.filter_by(username=username).first():
         return jsonify({"error": "Username already exists"}), 400
+    
     # Create a new user (role: Customer)
     new_user = User(
-        username=data['username'],
-        password=data['password'],
-        full_name=data['full_name'],
-        age=data['age'],
-        address=data['address'],
-        gender=data['gender'],
-        marital_status=data['marital_status'],
-        role="Customer"  # Explicitly set the role to 'Customer'
+        username=username,
+        password=password,  # Hash passwords in production
+        full_name=full_name,
+        age=age,
+        address=address,
+        gender=gender,
+        marital_status=marital_status,
+        role="Customer"
     )
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "Customer registered successfully"}), 201
+
 
 @app.route('/customers/<int:id>', methods=['DELETE'])
 @login_required  # Ensure the user is logged in
@@ -98,9 +131,16 @@ def update_customer(id):
         return jsonify({"error": "Customer not found"}), 404
     
     data = request.json
-    for key, value in data.items():
-        if hasattr(customer, key):
-            setattr(customer, key, value)
+    allowed_keys = ["full_name", "age", "address", "gender", "marital_status"]
+    sanitized_data = {key: sanitize_string(data[key]) if key == "address" else data[key] for key in data if key in allowed_keys}
+    
+    # Perform type and range checks
+    if 'age' in sanitized_data:
+        if not isinstance(sanitized_data['age'], int) or not (0 < sanitized_data['age'] < 150):
+            return jsonify({"error": "Invalid age"}), 400
+    
+    for key, value in sanitized_data.items():
+        setattr(customer, key, value)
     db.session.commit()
     return jsonify({"message": "Customer updated successfully"})
 
@@ -154,52 +194,42 @@ def get_customer(username):
 @login_required  # Ensure the user is logged in
 @roles_required("Customer")  # Ensure the user is a customer
 def charge_wallet(id):
-    # Access the current user's ID from the session to ensure they are only modifying their own account
     current_user_id = session.get('user_id')
-
-    # Retrieve the customer to be charged
     customer = User.query.get(id)
     if not customer:
         return jsonify({"error": "Customer not found"}), 404
-
-    # Check if the customer's ID matches the logged-in user's ID
     if customer.id != current_user_id:
         return jsonify({"error": "Access denied"}), 403
 
-    # Get the amount to be charged from the request
-    amount = request.json.get('amount')
-    if amount is None or amount <= 0:
-        return jsonify({"error": "Invalid amount"}), 400
+    try:
+        amount = float(request.json.get('amount'))
+        if amount <= 0:
+            return jsonify({"error": "Invalid amount"}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid amount format"}), 400
 
-    # Update the wallet amount
     customer.wallet += amount
     db.session.commit()
     return jsonify({"message": f"Wallet charged by {amount}. New balance: {customer.wallet}"})
 
 @app.route('/customers/<int:id>/deduct', methods=['POST'])
-@login_required  # Ensure the user is logged in
-@roles_required("Customer")  # Ensure the user is a customer
+@login_required
+@roles_required("Customer")
 def deduct_wallet(id):
-    # Access the current user's ID from the session to ensure they are only modifying their own account
     current_user_id = session.get('user_id')
-
-    # Retrieve the customer whose wallet will be deducted
     customer = User.query.get(id)
     if not customer:
         return jsonify({"error": "Customer not found"}), 404
-
-    # Check if the customer's ID matches the logged-in user's ID
     if customer.id != current_user_id:
         return jsonify({"error": "Access denied"}), 403
 
-    # Get the amount to be deducted from the request
-    amount = request.json.get('amount')
-    if amount is None or amount <= 0:
-        return jsonify({"error": "Invalid amount"}), 400
-    if customer.wallet < amount:
-        return jsonify({"error": "Insufficient funds"}), 400
+    try:
+        amount = float(request.json.get('amount'))
+        if amount <= 0 or customer.wallet < amount:
+            return jsonify({"error": "Invalid or insufficient amount"}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid amount format"}), 400
 
-    # Update the wallet amount
     customer.wallet -= amount
     db.session.commit()
     return jsonify({"message": f"Wallet deducted by {amount}. New balance: {customer.wallet}"})
@@ -215,12 +245,27 @@ def add_product():
         if field not in data:
             return jsonify({"error": f"{field} is required"}), 400
 
+    try:
+        # Type and range checking for 'price' and 'stock'
+        price = float(data['price'])
+        if price < 0:
+            return jsonify({"error": "Price must be a positive number"}), 400
+        stock = int(data['stock'])
+        if stock < 0:
+            return jsonify({"error": "Stock must be a non-negative integer"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid data format for price or stock"}), 400
+
+    # Sanitization of inputs
+    name = sanitize_string(data['name'])
+    description = sanitize_string(data.get('description', ""))
+
     new_product = Product(
-        name=data['name'],
+        name=name,
         category=data['category'],
-        price=data['price'],
-        description=data.get('description', ""),  # Optional field
-        stock=data['stock']
+        price=price,
+        description=description,  
+        stock=stock
     )
     db.session.add(new_product)
     db.session.commit()
@@ -235,9 +280,12 @@ def deduct_product_stock(product_id):
     if not product:
         return jsonify({"error": "Product not found"}), 404
 
-    quantity = request.json.get('quantity')
-    if quantity is None or quantity <= 0:
-        return jsonify({"error": "Invalid quantity"}), 400
+    try:
+        quantity = int(request.json.get('quantity'))
+        if quantity <= 0:
+            return jsonify({"error": "Quantity must be a positive integer"}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid data format for quantity"}), 400
 
     if product.stock < quantity:
         return jsonify({"error": "Not enough stock available"}), 400
@@ -256,10 +304,22 @@ def update_product(product_id):
         return jsonify({"error": "Product not found"}), 404
 
     data = request.json
-    # Update only the fields provided in the request
-    for key, value in data.items():
-        if hasattr(product, key):  # Check if the field exists in the Product model
-            setattr(product, key, value)
+    # Validate and update only the fields provided in the request
+    try:
+        for key, value in data.items():
+            if hasattr(product, key):
+                # Type and range validation, as well as sanitization, based on the attribute
+                if key in ['price', 'stock'] and (isinstance(value, int) or isinstance(value, float)):
+                    if key == 'stock' and value < 0:
+                        raise ValueError("Stock cannot be negative")
+                    if key == 'price' and value < 0:
+                        raise ValueError("Price cannot be negative")
+                elif key == 'name' or key == 'category' or key == 'description':
+                    value = sanitize_string(value)  # Assuming sanitize_string is defined to escape HTML
+                setattr(product, key, value)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
     db.session.commit()
     return jsonify({"message": "Product updated successfully"})
 
@@ -274,14 +334,19 @@ def display_available_goods():
 
 
 
-# 2. Get Goods Details
 @app.route('/sales/good-details/<int:product_id>', methods=['GET'])
 @login_required  # Ensure the user is logged in
 @roles_required("Admin", "Customer")  # Access limited to Admins and Customers
 def get_good_details(product_id):
+    # Assuming there's a need to check if product_id is within a sensible range
+    if product_id < 1:
+        return jsonify({"error": "Invalid product ID"}), 400
+
     product = Product.query.get(product_id)
     if not product:
         return jsonify({"error": "Product not found"}), 404
+
+    # Here we are simply returning data, sanitization for input is assumed to be handled elsewhere
     return jsonify({
         "id": product.id,
         "name": product.name,
@@ -296,13 +361,17 @@ def get_good_details(product_id):
 @roles_required("Customer")  # Access limited to Customers
 def process_sale():
     data = request.json
-    # Use the session to retrieve the username instead of expecting it in the request
+
+    # Use the session to retrieve the username
     username = session.get('username')
 
-    product_name = data.get('product_name')
+    # Sanitize and validate the product name
+    product_name = sanitize_string(data.get('product_name'))
+    if not product_name:
+        return jsonify({"error": "Product name is required"}), 400
 
     # Validate user and product
-    customer = User.query.filter_by(username=username, role="Customer").first()  # Ensure the user is a Customer
+    customer = User.query.filter_by(username=username, role="Customer").first()
     product = Product.query.filter_by(name=product_name).first()
 
     if not customer:
@@ -329,7 +398,6 @@ def process_sale():
         "remaining_wallet_balance": customer.wallet,
         "remaining_stock": product.stock
     })
-
 
 @app.route('/sales/purchase-history/<int:customer_id>', methods=['GET'])
 @login_required  # Ensure the user is logged in
@@ -361,23 +429,30 @@ def submit_review():
     data = request.json
     # Fetch the user ID from the session to ensure the logged-in user is creating the review
     customer_id = session['user_id']
-    product_id = data.get('product_id')
+    product_id = data.get('product_id', type=int)
+
     
     # Validate product existence
     product = Product.query.get(product_id)
     if not product:
         return jsonify({"error": "Invalid product ID"}), 404
 
+    rating = data.get('rating', type=int)
+    if not isinstance(rating, int) or not (1 <= rating <= 5):
+        return jsonify({"error": "Invalid rating. Must be an integer from 1 to 5."}), 400
+
+    comment = sanitize_string(data.get('comment', ""))
+
     # Create a new review with the logged-in customer's ID
     new_review = Review(
-        customer_id=customer_id,  # Use the session user_id instead of passing it in the request
+        customer_id=customer_id,
         product_id=product_id,
-        rating=data.get('rating'),
-        comment=data.get('comment', "")
+        rating=rating,
+        comment=comment
     )
     db.session.add(new_review)
     db.session.commit()
-    return jsonify({"message": "Review submitted successfully", "review_id": new_review.id}), 201
+    return jsonify({"message": "Review submitted successfully", "review_id": new_review.id})
 
 
 @app.route('/reviews/update/<int:review_id>', methods=['PUT'])
@@ -393,8 +468,16 @@ def update_review(review_id):
         return jsonify({"error": "Unauthorized access"}), 403
 
     data = request.json
-    review.rating = data.get('rating', review.rating)
-    review.comment = data.get('comment', review.comment)
+    rating = data.get('rating', type=int)
+    if rating is not None:
+        if not isinstance(rating, int) or not (1 <= rating <= 5):
+            return jsonify({"error": "Invalid rating. Must be an integer from 1 to 5."}), 400
+        review.rating = rating  # Update only if a valid rating is provided
+
+    comment = data.get('comment')
+    if comment is not None:
+        review.comment = sanitize_string(comment)  # Sanitize and update comment
+
     db.session.commit()
     return jsonify({"message": "Review updated successfully"})
 
@@ -472,7 +555,13 @@ def moderate_review(review_id):
 
     # Simulate moderation logic (e.g., flagging or approving the review)
     data = request.json
-    action = data.get('action')  # Expected values: "approve", "flag"
+    action = data.get('action')
+
+    # Type checking for action
+    if not isinstance(action, str):
+        return jsonify({"error": "Invalid action type. Must be a string."}), 400
+
+    # Validate the action value
     if action == "approve":
         return jsonify({"message": "Review approved successfully"})
     elif action == "flag":
