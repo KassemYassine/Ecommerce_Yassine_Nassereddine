@@ -427,20 +427,30 @@ def get_purchase_history(customer_id):
 @roles_required("Customer")  # Ensure the user is a Customer
 def submit_review():
     data = request.json
+
     # Fetch the user ID from the session to ensure the logged-in user is creating the review
     customer_id = session['user_id']
-    product_id = data.get('product_id', type=int)
 
-    
+    # Validate product_id
+    try:
+        product_id = int(data.get('product_id'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid product ID. It must be an integer."}), 400
+
     # Validate product existence
     product = Product.query.get(product_id)
     if not product:
         return jsonify({"error": "Invalid product ID"}), 404
 
-    rating = data.get('rating', type=int)
-    if not isinstance(rating, int) or not (1 <= rating <= 5):
-        return jsonify({"error": "Invalid rating. Must be an integer from 1 to 5."}), 400
+    # Validate rating
+    try:
+        rating = int(data.get('rating'))
+        if not (1 <= rating <= 5):
+            return jsonify({"error": "Invalid rating. Must be an integer from 1 to 5."}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid rating. It must be an integer."}), 400
 
+    # Sanitize comment
     comment = sanitize_string(data.get('comment', ""))
 
     # Create a new review with the logged-in customer's ID
@@ -452,8 +462,8 @@ def submit_review():
     )
     db.session.add(new_review)
     db.session.commit()
-    return jsonify({"message": "Review submitted successfully", "review_id": new_review.id})
 
+    return jsonify({"message": "Review submitted successfully", "review_id": new_review.id}), 201
 
 @app.route('/reviews/update/<int:review_id>', methods=['PUT'])
 @login_required  # Ensure the user is logged in
@@ -543,31 +553,59 @@ def get_customer_reviews(customer_id):
     else:
         return jsonify({"error": "Unauthorized access"}), 403
 
-
-
-@app.route('/reviews/moderate/<int:review_id>', methods=['PUT'])
-@login_required  # Ensure the user is logged in
-@roles_required("Admin")  # Ensure the user is an admin
-def moderate_review(review_id):
+@app.route('/reviews/flag/<int:review_id>', methods=['POST'])
+@login_required
+def flag_review(review_id):
     review = Review.query.get(review_id)
     if not review:
         return jsonify({"error": "Review not found"}), 404
 
-    # Simulate moderation logic (e.g., flagging or approving the review)
-    data = request.json
-    action = data.get('action')
+    # Prevent users from flagging their own reviews
+    if session['user_id'] == review.customer_id:
+        return jsonify({"error": "You cannot flag your own review"}), 403
 
-    # Type checking for action
+    # Flag the review
+    review.flagged = True
+    db.session.commit()
+    return jsonify({"message": "Review flagged successfully"})
+
+@app.route('/reviews/flagged', methods=['GET'])
+@login_required
+@roles_required("Admin")
+def get_flagged_reviews():
+    flagged_reviews = Review.query.filter_by(flagged=True).all()
+    return jsonify([
+        {
+            "review_id": review.id,
+            "product_id": review.product_id,
+            "rating": review.rating,
+            "comment": review.comment
+        }
+        for review in flagged_reviews
+    ])
+
+
+@app.route('/reviews/moderate/<int:review_id>', methods=['PUT'])
+@login_required
+@roles_required("Admin")
+def moderate_review(review_id):#admin can delete both flagged and non flagged reviews
+    review = Review.query.get(review_id)
+    if not review:
+        return jsonify({"error": "Review not found"}), 404
+
+    data = request.json
+    action = data.get('action')  # Expected values: "approve", "delete"
     if not isinstance(action, str):
         return jsonify({"error": "Invalid action type. Must be a string."}), 400
 
-    # Validate the action value
     if action == "approve":
-        return jsonify({"message": "Review approved successfully"})
-    elif action == "flag":
-        db.session.delete(review)  # Example: flagging removes the review
+        review.flagged = False
         db.session.commit()
-        return jsonify({"message": "Review flagged and removed successfully"})
+        return jsonify({"message": "Review approved successfully"})
+    elif action == "delete":
+        db.session.delete(review)
+        db.session.commit()
+        return jsonify({"message": "Review deleted successfully"})
     else:
         return jsonify({"error": "Invalid moderation action"}), 400
 

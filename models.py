@@ -29,7 +29,7 @@ class Review(db.Model):
     customer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     rating = db.Column(db.Integer, nullable=False)
     comment = db.Column(db.String(300), nullable=True)
-
+    flagged = db.Column(db.Boolean, default=False)
 class PurchaseHistory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     customer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
