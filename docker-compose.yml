@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: . # Build from the current directory
+      dockerfile: Dockerfile # Specify the Dockerfile
+    ports:
+      - "5000:5000" # Map port 5000 to host
+    volumes:
+      - .:/app # Mount current directory into the container
+    environment:
+      FLASK_APP: app.py
+      FLASK_RUN_HOST: 0.0.0.0
+      SQLALCHEMY_DATABASE_URI: postgresql://user:password@db:5432/ecommerce
+      SQLALCHEMY_TRACK_MODIFICATIONS: "false"
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15
+    ports:
+      - "5432:5432" # Expose PostgreSQL port
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: ecommerce
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+volumes:
+  db_data:
