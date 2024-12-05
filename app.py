@@ -642,13 +642,13 @@ def add_admin_user():
         # Create an admin user
         admin_user = User(
             username='adminuser',
-            password='secureAdminPassword',  # You should hash this password in a real application
+            password='secureAdminPassword',  
             full_name='Admin User',
             age=35,
             address='456 Admin St',
             gender='Male',
             marital_status='Married',
-            wallet=500.0,  # Initial amount in the wallet for demonstration
+            wallet=500.0,  
             role='Admin'
         )
         
