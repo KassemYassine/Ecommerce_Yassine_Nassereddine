@@ -76,7 +76,7 @@ This project is a backend implementation for an e-commerce platform using **Flas
 ### Setup Instructions
 1. **Clone the Repository**:
    ```
-   git clone <repository-url>
+   git clone https://github.com/KassemYassine/Ecommerce_Yassine_Nassereddine.git
    cd <repository-directory>
    ```
 
